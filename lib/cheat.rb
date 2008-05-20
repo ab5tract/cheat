@@ -1,5 +1,5 @@
 $:.unshift File.dirname(__FILE__)
-%w[rubygems tempfile fileutils net/http yaml rubygems/open-uri wrap].each { |f| require f }
+%w[rubygems tempfile fileutils net/http yaml open-uri wrap].each { |f| require f }
 
 module Cheat
   extend self
@@ -7,7 +7,7 @@ module Cheat
   HOST = ARGV.include?('debug') ? 'localhost' : 'cheat.errtheblog.com'
   PORT = ARGV.include?('debug') ? 3001 : 80
   SUFFIX = ''
-
+  
   def sheets(args)
     args = args.dup
 
@@ -18,9 +18,8 @@ module Cheat
     uri = "http://#{cheat_uri}/y/"
 
     if %w[sheets all recent].include? @sheet
-      options = headers.update(proxy_options)
       uri = uri.sub('/y/', @sheet == 'recent' ? '/yr/' : '/ya/')
-      return open(uri,options) { |body| show(body.read) }
+      return open(uri) { |body| show(body.read) } 
     end
 
     return show(File.read(cache_file)) if File.exists?(cache_file) rescue clear_cache if cache_file 
@@ -29,8 +28,7 @@ module Cheat
   end
 
   def fetch_sheet(uri, try_to_cache = true)
-    options = headers.update(proxy_options)
-    open(uri, options) do |body|
+    open(uri, headers) do |body|
       sheet = body.read
       File.open(cache_file, 'w') { |f| f.write(sheet) } if try_to_cache && cache_file && !@edit 
       @edit ? edit(sheet) : show(sheet)
@@ -56,6 +54,8 @@ module Cheat
 
     add(args.shift) and return if args.delete('--add')
     clear_cache if @edit = args.delete('--edit')
+
+    @returns = true if args.delete('--returns')
 
     @sheet = args.shift
 
@@ -85,18 +85,6 @@ module Cheat
   def headers
     { 'User-Agent' => 'cheat!', 'Accept' => 'text/yaml' } 
   end
-  
-  def proxy_options
-    if ENV['HTTP_PROXY'] || ENV['http_proxy']
-      proxy_array = []
-      proxy_array << (ENV['HTTP_PROXY'] || ENV['http_proxy'])
-      proxy_array << (ENV['HTTP_PROXY_USER'] || ENV['http_proxy_user'] || '')
-      proxy_array << (ENV['HTTP_PROXY_PASS'] || ENV['http_proxy_pass'] || '')
-      {:proxy_http_basic_authentication => proxy_array}
-    else
-      {}
-    end
-  end
 
   def cheat_uri
     "#{HOST}:#{PORT}#{SUFFIX}"
@@ -105,13 +93,18 @@ module Cheat
   def show(sheet_yaml)
     sheet = YAML.load(sheet_yaml).to_a.first
     sheet[-1] = sheet.last.join("\n") if sheet[-1].is_a?(Array)
-    run_pager
-    puts sheet.first + ':'
-    puts '  ' + sheet.last.gsub("\r",'').gsub("\n", "\n  ").wrap
-  rescue Errno::EPIPE
-    # do nothing
+    
+    unless @returns
+      puts sheet.first + ':'
+      puts '  ' + sheet.last.gsub("\r",'').gsub("\n", "\n  ").wrap
+    else
+      grip = sheet.first + ':\n'
+      grip << '  ' + sheet.last.gsub("\r",'').gsub("\n", "\n  ").wrap
+      return grip
+    end
+    
   rescue
-    puts "That didn't work.  Maybe try `$ cheat cheat' for help?" # Fix Emacs ruby-mode highlighting bug: `"
+    puts "That didn't work.  Maybe try `$ cheat cheat' for help?"
   end
 
   def edit(sheet_yaml)
@@ -179,34 +172,6 @@ module Cheat
 
   def clear_cache
     FileUtils.rm_rf(cache_dir) if cache_dir
-  end
-
-  def run_pager
-    return if PLATFORM =~ /win32/
-    return unless STDOUT.tty?
-
-    read, write = IO.pipe
-
-    unless Kernel.fork # Child process
-      STDOUT.reopen(write)
-      STDERR.reopen(write) if STDERR.tty?
-      read.close
-      write.close
-      return
-    end
-
-    # Parent process, become pager
-    STDIN.reopen(read)
-    read.close
-    write.close
-
-    ENV['LESS'] = 'FSRX' # Don't page if the input is short enough
-
-    # wait until we have input before we start the pager
-    Kernel.select [STDIN]
-    pager = ENV['PAGER'] || 'less'
-    exec pager rescue exec "/bin/sh", "-c", pager
-  rescue
   end
 end
 
